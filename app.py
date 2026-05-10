@@ -1,5 +1,5 @@
 import cv2
-import dlib
+import mediapipe as mp
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras.models import load_model
@@ -26,19 +26,19 @@ except Exception as e:
     print(f"Error loading model: {e}")
     exit()
 
-# Initialize Dlib Face Detector and Shape Predictor
-detector = dlib.get_frontal_face_detector()
-predictor_path = "data/shape-predictor-68-face-landmarksdat/shape_predictor_68_face_landmarks.dat"
-
-if not os.path.exists(predictor_path):
-    print(f"Error: Dlib model '{predictor_path}' not found.")
-    exit()
-
-predictor = dlib.shape_predictor(predictor_path)
+# Initialize MediaPipe Face Mesh
+mp_face_mesh = mp.solutions.face_mesh
+face_mesh = mp_face_mesh.FaceMesh(
+    max_num_faces=1,
+    refine_landmarks=True,
+    min_detection_confidence=0.5,
+    min_tracking_confidence=0.5
+)
 
 # Helper function to crop bounding box safely from landmarks
 def get_roi_from_landmarks(frame, landmarks, point_indices, padding=0.2):
-    pts = np.array([(landmarks.part(i).x, landmarks.part(i).y) for i in point_indices])
+    h_frame, w_frame = frame.shape[:2]
+    pts = np.array([(int(landmarks.landmark[i].x * w_frame), int(landmarks.landmark[i].y * h_frame)) for i in point_indices])
     x, y, w, h = cv2.boundingRect(pts)
     
     pad_x = int(w * padding)
@@ -52,18 +52,21 @@ def get_roi_from_landmarks(frame, landmarks, point_indices, padding=0.2):
     return frame[y1:y2, x1:x2]
 
 # Helper function to calculate head tilt angle
-def calculate_tilt(landmarks):
-    left_eye_pts = [(landmarks.part(i).x, landmarks.part(i).y) for i in range(36, 42)]
-    right_eye_pts = [(landmarks.part(i).x, landmarks.part(i).y) for i in range(42, 48)]
+def calculate_tilt(landmarks, frame):
+    h, w = frame.shape[:2]
+    # Left eye (image right): indices [362, 263, 386, 374]
+    left_eye_pts = [(landmarks.landmark[i].x * w, landmarks.landmark[i].y * h) for i in [362, 263, 386, 374]]
+    # Right eye (image left): indices [33, 133, 159, 145]
+    right_eye_pts = [(landmarks.landmark[i].x * w, landmarks.landmark[i].y * h) for i in [33, 133, 159, 145]]
     
-    left_cx = sum(pt[0] for pt in left_eye_pts) / 6.0
-    left_cy = sum(pt[1] for pt in left_eye_pts) / 6.0
+    left_cx = sum(pt[0] for pt in left_eye_pts) / 4.0
+    left_cy = sum(pt[1] for pt in left_eye_pts) / 4.0
     
-    right_cx = sum(pt[0] for pt in right_eye_pts) / 6.0
-    right_cy = sum(pt[1] for pt in right_eye_pts) / 6.0
+    right_cx = sum(pt[0] for pt in right_eye_pts) / 4.0
+    right_cy = sum(pt[1] for pt in right_eye_pts) / 4.0
     
-    dY = right_cy - left_cy
-    dX = right_cx - left_cx
+    dY = left_cy - right_cy
+    dX = left_cx - right_cx
     
     angle = math.degrees(math.atan2(dY, dX))
     return angle
@@ -102,22 +105,24 @@ while True:
         
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     
-    # Pass the image to the detector (find faces)
-    faces = detector(gray)
+    # Pass the image to MediaPipe Face Mesh
+    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    results = face_mesh.process(rgb_frame)
     
     status = "Open"
     yawning_detected = False
     head_tilt_detected = False
     
-    if len(faces) > 0:
-        face = faces[0] # Pick the primary face
-        landmarks = predictor(gray, face)
+    if results.multi_face_landmarks:
+        landmarks = results.multi_face_landmarks[0] # Pick the primary face
         
         # -------------------------------------------------------------
         # 1. EYE DETECTION (Use eye crops for accurate CNN classification)
         # -------------------------------------------------------------
-        left_eye_roi = get_roi_from_landmarks(gray, landmarks, list(range(36, 42)), padding=0.2)
-        right_eye_roi = get_roi_from_landmarks(gray, landmarks, list(range(42, 48)), padding=0.2)
+        # MediaPipe right eye indices: [33, 133, 159, 145]
+        # MediaPipe left eye indices: [362, 263, 386, 374]
+        left_eye_roi = get_roi_from_landmarks(gray, landmarks, [362, 263, 386, 374], padding=0.5)
+        right_eye_roi = get_roi_from_landmarks(gray, landmarks, [33, 133, 159, 145], padding=0.5)
         
         eyes_closed_detected = False
         
@@ -140,11 +145,20 @@ while True:
         # -------------------------------------------------------------
         # 2. MOUTH/YAWN DETECTION (Use face crop for CNN classification)
         # -------------------------------------------------------------
-        x, y, w, h = (face.left(), face.top(), face.width(), face.height())
-        x1 = max(0, x)
-        y1 = max(0, y)
-        x2 = min(frame.shape[1], x + w)
-        y2 = min(frame.shape[0], y + h)
+        h_frame, w_frame = frame.shape[:2]
+        x_min = int(min([lm.x for lm in landmarks.landmark]) * w_frame)
+        x_max = int(max([lm.x for lm in landmarks.landmark]) * w_frame)
+        y_min = int(min([lm.y for lm in landmarks.landmark]) * h_frame)
+        y_max = int(max([lm.y for lm in landmarks.landmark]) * h_frame)
+        
+        # Add padding to approximate the broader dlib face bounding box
+        pad_w = int((x_max - x_min) * 0.15)
+        pad_h = int((y_max - y_min) * 0.20)
+        
+        x1 = max(0, x_min - pad_w)
+        y1 = max(0, y_min - pad_h)
+        x2 = min(frame.shape[1], x_max + pad_w)
+        y2 = min(frame.shape[0], y_max + pad_h)
         
         face_roi = gray[y1:y2, x1:x2]
         
@@ -161,7 +175,7 @@ while True:
         # -------------------------------------------------------------
         # 3. HEAD TILT DETECTION 
         # -------------------------------------------------------------
-        angle = calculate_tilt(landmarks)
+        angle = calculate_tilt(landmarks, frame)
         if abs(angle) > 20: # 20 degrees threshold
             head_tilt_detected = True
     

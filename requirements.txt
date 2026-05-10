@@ -1,6 +1,6 @@
-tensorflow>=2.10.0
+tensorflow==2.16.1
 keras
 opencv-python
 numpy
-dlib
+mediapipe==0.10.14
 kaggle
