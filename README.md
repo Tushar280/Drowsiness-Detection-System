@@ -2,6 +2,13 @@
 
 A real-time computer vision application that monitors a user's face to detect signs of drowsiness, such as closed eyes, yawning, and head tilts, sounding an alarm to prevent accidents.
 
+## 🛠️ Built With
+
+![Language](https://img.shields.io/badge/Language-Python-3776AB?logo=python&logoColor=white)
+![Library](https://img.shields.io/badge/Library-OpenCV-5C3EE8?logo=opencv&logoColor=white)
+![ML](https://img.shields.io/badge/ML-MediaPipe-00A67E?logo=mediapipe&logoColor=white)
+![Model](https://img.shields.io/badge/Model-TensorFlow-FF6F00?logo=tensorflow&logoColor=white)
+
 ## ✨ Features
 
 - **Real-Time Monitoring:** Captures live video feed using your webcam.
